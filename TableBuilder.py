@@ -6,10 +6,15 @@
 import pandas as pd
 import requests
 import re
-from bs4 import BeautifulSoup
+import json
+from osrsbox import items_api as items
+
+# drop sources contains the name of each non npc table needed
+drop_sources = ['beginner casket', 'easy casket', 'medium casket', 'hard casket', 'elite casket', 'master casket']
 
 
-def build_clue_table_from_wiki(drop_source):
+# build_clue_table  builds a clue table from the osrs wiki
+def build_clue_table(drop_source):
     url = 'https://oldschool.runescape.wiki/w/' + drop_source
     response = requests.get(url)
 
@@ -28,59 +33,64 @@ def build_clue_table_from_wiki(drop_source):
     del table['Unnamed: 0']  # delete unnamed column
     del table['Price']  # delete price column
     del table['High Alch']  # delete high alch column
-    table['Rarity'] = table['Rarity'].apply(lambda x: '1/1' if 'Always' in x else x)  # replaces always with 1/1
-    table = table[table.Rarity != '1/1']  # remove all always drops
-    table['Rarity'] = table['Rarity'].str.replace(',', "", regex=True)  # removes commas from rarity
-    table['Rarity'] = table['Rarity'].apply(lambda x: re.sub("[\[].*?[\]]", "", x))  # removes annotations [~]
-    table['Quantity'] = table['Quantity'].apply(
+    table.columns = table.columns.str.lower()  # remove capitalization from each column name
+    table.columns = table.columns.str.replace("item", "name", regex=True)
+    table['rarity'] = table['rarity'].apply(lambda x: '1/1' if 'Always' in x else x)  # replaces always with 1/1
+    table = table[table.rarity != '1/1']  # remove all always drops
+    table['rarity'] = table['rarity'].str.replace(',', "", regex=True)  # removes commas from rarity
+    table['rarity'] = table['rarity'].apply(lambda x: re.sub("[\[].*?[\]]", "", x))  # removes annotations [~]
+    table['quantity'] = table['quantity'].apply(
         lambda x: re.sub("[\(].*?[\)]", "", str(x)).strip())  # remove (noted)
-    table['Quantity'] = table['Quantity'].apply(
+    table['quantity'] = table['quantity'].apply(
         lambda x: re.sub(u"\u2013", "-", str(x)))  # replaces en dash with regular dash
-    table['Quantity'] = table['Quantity'].str.replace(',', "", regex=True)  # removes commas from quantity
-    table['Rarity'] = table['Rarity'].apply(pd.eval)  # evaluates each rarity as double
+    table['quantity'] = table['quantity'].str.replace(',', "", regex=True)  # removes commas from quantity
+    table['rarity'] = table['rarity'].apply(pd.eval)  # evaluates each rarity as double
 
-    # Special case regarding super potion sets
+    # Special cases
+
+    # Hard clue table contains a "Zombie head (treasure trails), but the osrsbox api has the name as "Zombie head," so
+    # (treasure trails must be removed from the name
+
+    table['name'] = table['name'].apply(
+        lambda x: re.sub("[\(]Treasure Trails[\)]", "", str(x)).strip())  # remove (Treasure Trails)
+
     # The mega-rare hard table includes 3 rows for super att, str, and def (4). All 3 are dropped together, so to keep
     # the simulation accurate, the 3 drops are replaced with a single row of the super attack box which contains all
     # three potions in the set.
 
+    table['name'] = table['name'].apply(lambda x: 'Super potion set' if 'Super attack(4)' in x else x)
+    table = table.drop(table[table.name == 'Super strength(4)'].index)
+    table = table.drop(table[table.name == 'Super defence(4)'].index)
+
+    # store ids in a new column gathered from the osrs-box db
+
     ids_to_be_added = []
 
+    my_items = items.load()
+
+    print(drop_source)  # console printing to ensure program is running
+
+    # get the id of each item gathered from the wiki by using the osrs-box db
+
     for row in table.iterrows():
+        for item in my_items:
+            if item.name == row[1]['name']:
 
-        url = 'https://oldschool.runescape.wiki/w/' + row[1]['Item']
-        response = requests.get(url)
-        soup = BeautifulSoup(response.content, 'html.parser')
-        soup2 = soup.find('div', attrs={'class': 'realtimePrices'})
+                if item.name == 'Coins':  # special case for coins
+                    ids_to_be_added.append(995)  # specific coin id needed
+                else:
+                    ids_to_be_added.append(int(item.id))
 
-        # Items with multiple IDs will return a type error using the
-        # above search. So, if a type error is caught, a different method is used
-        # to acquire the id.
+                print(item.name)  # console printing to ensure program is running
+                break
 
-        try:
-
-            item_id = soup2['data-itemid']  # try normal fetch
-
-        except TypeError:  # if type error
-
-            temp_id = soup.find(string='Item ID').next.text  # unique fetch
-
-            if ',' in temp_id:  # if the temp id contains a comma, the wiki provided all IDs of the item
-                item_id = temp_id.split(',')[0]  # gets first id
-
-            else:
-                item_id = temp_id  # gets the id
-
-        ids_to_be_added.append(int(item_id))
-        print(item_id)
-
-    table['ID'] = ids_to_be_added
-    table['Drop-source'] = drop_source
+    table['id'] = ids_to_be_added
+    table['drop-source'] = drop_source
     return table
 
 
-def main():
-
+# build_all_clue_tables builds all clue tables from the osrs wiki
+def build_all_clue_tables():
     beginner = 'Beginner casket'
     easy = 'Easy casket'
     medium = 'Medium casket'
@@ -92,15 +102,39 @@ def main():
     clue_tables = []
 
     for clue in all_clues:  # for each clue scroll
-        clue_table = build_clue_table_from_wiki(clue)  # builds the table
+        clue_table = build_clue_table(clue)  # builds the table
         clue_tables.append(clue_table)
 
-    clue_table = pd.concat(clue_tables)
+    clue_table = pd.concat(clue_tables)  # concatenates all clue tables to a single table
 
-    clue_table.to_json(path_or_buf='C:/Users/Marshall/IdeaProjects/drop-simulator/src/main/resources/non_npc_tables'
+    return clue_table
+
+
+# build_all_tables builds ALL non npc tables from the osrs wiki
+def build_all_tables():
+
+    all_clue_tables = build_all_clue_tables()
+
+    return all_clue_tables
+
+
+# all_tables_to_json writes ALL tables to a json file
+def all_tables_to_json():
+    all_tables = build_all_tables()
+    all_tables.to_json(path_or_buf='C:/Users/Marshall/IdeaProjects/drop-simulator/src/main/resources/non_npc_tables'
                                    '.json',
                        orient='table')
 
+
+# all_table_names_to_json writes ALL table names to a json file
+def all_table_names_to_json(drop_table_names):
+    with open('C:/Users/Marshall/IdeaProjects/drop-simulator/src/main/resources/non_npc_table_names'
+              '.json', 'w', encoding='utf-8') as f:
+        json.dump(drop_table_names, f, ensure_ascii=False, indent=4)
+
+
+def main():
+    all_tables_to_json()
 
 
 if __name__ == '__main__':
