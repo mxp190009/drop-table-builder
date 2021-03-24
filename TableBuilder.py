@@ -9,6 +9,45 @@ import re
 from osrsbox import items_api as items
 
 
+# clean_up_table cleans up a table from the osrs wiki page - not applicable to clue tables or cox
+def clean_up_table(drop_source):
+    url = 'https://oldschool.runescape.wiki/w/' + drop_source
+    response = requests.get(url)
+
+    tables = []
+    html_tables = pd.read_html(response.text)
+
+    for table in html_tables:  # for each table on the page
+
+        if len(table.columns) > 4:  # if there is more than four columns
+            if table.columns[4] == 'Price':  # if it is a table containing items
+                tables.append(table)  # it is a table we want
+
+    table = pd.concat(tables)  # join all needed tables together
+
+    del table['Unnamed: 0']  # delete unnamed column
+    del table['Price']  # delete price column
+    del table['High Alch']  # delete high alch column
+    table.columns = table.columns.str.lower()  # remove capitalization from each column name
+    table.columns = table.columns.str.replace("item", "name", regex=True)
+    table['rarity'] = table['rarity'].apply(lambda x: '1/1' if 'Always' in x else x)  # replaces always with 1/1
+    table = table[table.name != 'Nothing']  # remove nothing drop
+    table['rarity'] = table['rarity'].str.replace(',', "", regex=True)  # removes commas from rarity
+    table['rarity'] = table['rarity'].apply(lambda x: re.sub(r'^.*?\u00D7', "", x))  # removes rolls x from rarity
+    table['rarity'] = table['rarity'].apply(lambda x: re.sub("[\[].*?[\]]", "", x))  # removes annotations [~]
+    table['rarity'] = table['rarity'].apply(lambda x: re.sub(';.*$', "", x))  # remove row rarities from rarity, ;____
+    table['quantity'] = table['quantity'].apply(
+        lambda x: re.sub("[\(].*?[\)]", "", str(x)).strip())  # remove (noted)
+    table['quantity'] = table['quantity'].apply(
+        lambda x: re.sub(u"\u2013", "-", str(x)))  # replaces en dash with regular dash
+    table['quantity'] = table['quantity'].str.replace(',', "", regex=True)  # removes commas from quantity
+    table['rarity'] = table['rarity'].apply(lambda x: re.sub('\u2013.*$', "", x))  # removes rarity interval from rarity
+    table['rarity'] = table['rarity'].apply(pd.eval)  # evaluates each rarity as double
+    table['quantity'] = table['quantity'].apply(lambda x: re.sub('\..*$', "", x))  # remove decimals from quantity
+
+    return table
+
+
 # build_clue_table builds a clue table from the osrs wiki
 def build_clue_table(drop_source):
     url = 'https://oldschool.runescape.wiki/w/' + drop_source
@@ -20,11 +59,10 @@ def build_clue_table(drop_source):
     for table in html_tables:  # for each table on the page
 
         if table.columns[1] == 'Item':  # if it is a table containing items
-            if table.Rarity[0] != 'Common':  # if it is NOT the mimic reward table
+            if table.Rarity[0] != 'Common':  # if it is a table with only numeric entries
                 tables.append(table)  # it is a table we want
 
     table = pd.concat(tables)  # join all needed tables together
-    pd.set_option("display.max_rows", None, "display.max_columns", None)
 
     del table['Unnamed: 0']  # delete unnamed column
     del table['Price']  # delete price column
@@ -93,64 +131,61 @@ def build_clue_table(drop_source):
     return table
 
 
-# build_all_clue_tables builds all clue tables from the osrs wiki and writes each table to an individual json file
-def all_clue_tables_to_json():
-    beginner = 'beginner_casket'
-    easy = 'easy_casket'
-    medium = 'medium_casket'
-    hard = 'hard_casket'
-    elite = 'elite_casket'
-    master = 'master_casket'
+# build_gwd_boss_table builds a gwd table from the osrs wiki
+def build_gwd_boss_table(drop_source):
+    table = clean_up_table(drop_source)
+    table = table[table.name != 'Super defence(3)']  # removes super def 3 from zilyana and kree
+    if drop_source != 'graardor':
+        table = table[table.name != 'Super restore(4)']  # remove super restore 4 from zilyana but not graardor
+    table = table[table.name != 'Super restore(3)']  # remove super restore 3 from kril
+    table = table[table.name != 'Super strength(3)']  # remove super strength 3 from kril
+    # store ids in a new column gathered from the osrs-box db
 
-    all_clues = [beginner, easy, medium, hard, elite, master]
+    ids_to_be_added = []  # ids of each item
+    drop_types_to_be_added = []  # type of drop of each item
 
-    for clue in all_clues:  # for each clue scroll
-        clue_table = build_clue_table(clue)  # builds the table
-        clue_table.to_json(path_or_buf='C:/Users/Marshall/IdeaProjects/drop-simulator/src/main/resources/' + clue +
-                                       '.json',
-                           orient='table')
+    my_items = items.load()
+
+    # get the id of each item gathered from the wiki by using the osrs-box db
+
+    for row in table.iterrows():
+        for item in my_items:
+            if item.name == row[1]['name']:
+                print(item.name)
+
+                if item.name == 'Coins':  # special case for coins
+                    ids_to_be_added.append(995)  # specific coin id needed
+                else:
+                    ids_to_be_added.append(int(item.id))
+
+                if row[1]['rarity'] == 1.0:  # if 100% rarity
+                    drop_types_to_be_added.append('always')
+                    break
+                # determine the drop type
+                if item.name.__contains__('Pet') or \
+                        item.name.__contains__("Brimstone") or \
+                        item.name.__contains__('Clue') or \
+                        item.name.__contains__('Long') or \
+                        item.name.__contains__('Curved'):
+                    drop_types_to_be_added.append('tertiary')  # tertiary
+                else:
+                    drop_types_to_be_added.append('')  # main drop
+                break
+
+    table['id'] = ids_to_be_added
+    table['drop-type'] = drop_types_to_be_added
+    return table
 
 
 # build_non_npc_table builds a non_npc_table from the osrs wiki that is NOT a clue scroll drop table
 def build_non_npc_table(drop_source):
-    url = 'https://oldschool.runescape.wiki/w/' + drop_source
-    response = requests.get(url)
-
-    tables = []
-    html_tables = pd.read_html(response.text)
-
-    for table in html_tables:  # for each table on the page
-
-        if len(table.columns) > 4:  # if there is more than one column
-            if table.columns[4] == 'Price':  # if it is a table containing items
-                tables.append(table)  # it is a table we want
-
-    table = pd.concat(tables)  # join all needed tables together
-    pd.set_option("display.max_rows", None, "display.max_columns", None)
-
-    del table['Unnamed: 0']  # delete unnamed column
-    del table['Price']  # delete price column
-    del table['High Alch']  # delete high alch column
-    table.columns = table.columns.str.lower()  # remove capitalization from each column name
-    table.columns = table.columns.str.replace("item", "name", regex=True)
-    table['rarity'] = table['rarity'].apply(lambda x: '1/1' if 'Always' in x else x)  # replaces always with 1/1
+    table = clean_up_table(drop_source)
     table = table[table.name != 'Cabbage']  # remove cabbage drops from tob
     table = table[table.name != 'Message (Theatre of Blood)']  # remove message drop from tob
     table = table[table.name != 'Magic potion(2)']  # remove magic potion(2) from grotesque guardians
     table = table[table.name != 'Ranging potion(2)']  # remove ranging potion(2) from grotesque guardians
     table = table[table.name != 'Bludgeon axon']  # remove bludgeon axon from unsired
     table = table[table.name != 'Bludgeon spine']  # remove bludgeon spine from unsired
-    table = table[table.name != 'Ranging potion(2)']  # remove ranging potion(2) from grotesque guardians
-    table['rarity'] = table['rarity'].str.replace(',', "", regex=True)  # removes commas from rarity
-    table['rarity'] = table['rarity'].apply(lambda x: re.sub(r'^.*?\u00D7', "", x))  # removes rolls x from rarity
-    table['rarity'] = table['rarity'].apply(lambda x: re.sub("[\[].*?[\]]", "", x))  # removes annotations [~]
-    table['quantity'] = table['quantity'].apply(
-        lambda x: re.sub("[\(].*?[\)]", "", str(x)).strip())  # remove (noted)
-    table['quantity'] = table['quantity'].apply(
-        lambda x: re.sub(u"\u2013", "-", str(x)))  # replaces en dash with regular dash
-    table['quantity'] = table['quantity'].str.replace(',', "", regex=True)  # removes commas from quantity
-    table['rarity'] = table['rarity'].apply(lambda x: re.sub('\u2013.*$', "", x))  # removes rarity interval from rarity
-    table['rarity'] = table['rarity'].apply(pd.eval)  # evaluates each rarity as double
 
     # store ids in a new column gathered from the osrs-box db
 
@@ -201,6 +236,24 @@ def build_non_npc_table(drop_source):
     return table
 
 
+# build_all_clue_tables builds all clue tables from the osrs wiki and writes each table to an individual json file
+def all_clue_tables_to_json():
+    beginner = 'beginner_casket'
+    easy = 'easy_casket'
+    medium = 'medium_casket'
+    hard = 'hard_casket'
+    elite = 'elite_casket'
+    master = 'master_casket'
+
+    all_clues = [beginner, easy, medium, hard, elite, master]
+
+    for clue in all_clues:  # for each clue scroll
+        clue_table = build_clue_table(clue)  # builds the table
+        clue_table.to_json(path_or_buf='C:/Users/Marshall/IdeaProjects/drop-simulator/src/main/resources/' + clue +
+                                       '.json',
+                           orient='table')
+
+
 # build_all_non_npc_tables_to_json builds all non_npc_tables from the osrs wiki and writes each table to an individual
 # json file
 def all_non_npc_tables_to_json():
@@ -218,8 +271,25 @@ def all_non_npc_tables_to_json():
                               orient='table')
 
 
+# all_gwd_boss_tables_to_json builds all gwd boss tables from the osrs wiki and writes each table to an individual .json
+# file
+def all_gwd_boss_tables_to_json():
+    kree = 'kree\'arra'
+    graardor = 'graardor'
+    kril = 'k\'ril'
+    zilyana = 'zilyana'
+
+    all_gwd_tables = [kree, graardor, kril, zilyana]
+
+    for table in all_gwd_tables:
+        gwd_table = build_gwd_boss_table(table)
+        gwd_table.to_json(path_or_buf='C:/Users/Marshall/IdeaProjects/drop-simulator/src/main/resources/' + table +
+                                      '.json',
+                          orient='table')
+
+
 # cox_table_to_json builds the tob table from the osrs wiki and writes the table to an individual json file
-# cox needs its own table because it is unique, no other drop source is rolled like cox
+# cox needs its own method because it is unique, no other drop source is rolled like cox
 def cox_table_to_json():
     url = 'https://oldschool.runescape.wiki/w/chambers of xeric'
     response = requests.get(url)
@@ -343,10 +413,82 @@ def cox_table_to_json():
 
     table['id'] = ids_to_be_added
     table['drop-type'] = drop_types_to_be_added
-    print(table)
 
     table.to_json(path_or_buf='C:/Users/Marshall/IdeaProjects/drop-simulator/src/main/resources/chambers.json',
                   orient='table')
+
+
+# build_slayer_boss_table builds the drop table for a boss that is a slayer boss
+def build_slayer_boss_table(drop_source):
+    table = clean_up_table(drop_source)
+    # store ids in a new column gathered from the osrs-box db
+
+    table = table[table.name != 'Hydra\'s fang']  # remove fang from hydra
+    table = table[table.name != 'Hydra\'s heart']  # remove heart from hydra
+
+    ids_to_be_added = []  # ids of each item
+    drop_types_to_be_added = []  # type of drop of each item
+
+    my_items = items.load()
+
+    # get the id of each item gathered from the wiki by using the osrs-box db
+
+    for row in table.iterrows():
+        for item in my_items:
+            if item.name == row[1]['name']:
+                print(item.name)
+
+                if item.name == 'Coins':  # special case for coins
+                    ids_to_be_added.append(995)  # specific coin id needed
+                elif item.name == 'Zulrah\'s scales':
+                    ids_to_be_added.append(3999)
+                else:
+                    ids_to_be_added.append(int(item.id))
+
+                if row[1]['rarity'] == 1.0:  # if 100% rarity
+                    drop_types_to_be_added.append('always')
+                    break
+                # determine the drop type
+                if item.name.__contains__('Pet') or \
+                        item.name.__contains__("Brimstone") or \
+                        item.name.__contains__('Clue') or \
+                        item.name.__eq__('Hellpuppy') or \
+                        item.name.__eq__('Vorki') or \
+                        item.name.__contains__('Alchemical') or \
+                        item.name.__contains__('Ikkle') or \
+                        item.name.__contains__('Jar'):
+                    drop_types_to_be_added.append('tertiary')  # tertiary
+                elif item.name.__contains__('Hydra\'s') or \
+                        item.name.__contains__('thrownaxe') or \
+                        item.name.__eq__('Hydra tail') or \
+                        item.name.__eq__('Hydra leather') or \
+                        item.name.__eq__('Dragon knife'):
+                    drop_types_to_be_added.append('pre-roll')
+                else:
+                    drop_types_to_be_added.append('')  # main drop
+                break
+
+    table['id'] = ids_to_be_added
+    table['drop-type'] = drop_types_to_be_added
+    return table
+
+
+# all_slayer_boss_tables_to_json builds and writes the table of each slayer boss to an individual json file
+def all_slayer_boss_tables_to_json():
+    zulrah = 'zulrah'  # not a slayer boss but fits well here
+    kraken = 'kraken'
+    thermy = 'thermonuclear_smoke_devil'
+    cerberus = 'cerberus'
+    sire = 'abyssal_sire'
+    hydra = 'alchemical_hydra'
+
+    all_slayer_boss_tables = [zulrah, kraken, thermy, cerberus, sire, hydra]
+
+    for table in all_slayer_boss_tables:  # for each clue scroll
+        boss_table = build_slayer_boss_table(table)  # builds the table
+        boss_table.to_json(path_or_buf='C:/Users/Marshall/IdeaProjects/drop-simulator/src/main/resources/' + table +
+                                       '.json',
+                           orient='table')
 
 
 # all_tables_to_json writes ALL tables to their own individual json file
@@ -354,6 +496,8 @@ def all_tables_to_json():
     all_clue_tables_to_json()
     all_non_npc_tables_to_json()
     cox_table_to_json()
+    all_gwd_boss_tables_to_json()
+    all_slayer_boss_tables_to_json()
 
 
 def main():
