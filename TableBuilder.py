@@ -107,7 +107,7 @@ def build_clue_table(drop_source):
 
     for row in table.iterrows():
         for item in my_items:
-            if item.name == row[1]['name']:
+            if item.name == row[1]['name'] and item.duplicate is False:
                 print(item.name)
 
                 if item.name == 'Coins':  # special case for coins
@@ -150,7 +150,7 @@ def build_gwd_boss_table(drop_source):
 
     for row in table.iterrows():
         for item in my_items:
-            if item.name == row[1]['name']:
+            if item.name == row[1]['name'] and item.duplicate is False:
                 print(item.name)
 
                 if item.name == 'Coins':  # special case for coins
@@ -198,7 +198,7 @@ def build_non_npc_table(drop_source):
 
     for row in table.iterrows():
         for item in my_items:
-            if item.name == row[1]['name']:
+            if item.name == row[1]['name'] and item.duplicate is False:
                 print(item.name)
 
                 if item.name == 'Coins':  # special case for coins
@@ -384,7 +384,7 @@ def cox_table_to_json():
 
     for row in table.iterrows():
         for item in my_items:
-            if item.name == row[1]['name']:
+            if item.name == row[1]['name'] and item.duplicate is False:
                 print(item.name)
 
                 ids_to_be_added.append(int(item.id))
@@ -435,13 +435,11 @@ def build_slayer_boss_table(drop_source):
 
     for row in table.iterrows():
         for item in my_items:
-            if item.name == row[1]['name']:
+            if item.name == row[1]['name'] and item.duplicate is False:
                 print(item.name)
 
                 if item.name == 'Coins':  # special case for coins
                     ids_to_be_added.append(995)  # specific coin id needed
-                elif item.name == 'Zulrah\'s scales':
-                    ids_to_be_added.append(3999)
                 else:
                     ids_to_be_added.append(int(item.id))
 
